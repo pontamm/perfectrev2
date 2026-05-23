@@ -4,13 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GPSナビ＆活動記録</title>
-    <!-- ★読み込み先を信頼性の高い cdnjs に変更しました -->
+    <!-- 配信元を完全に常時暗号化（HTTPS）された信頼性の高い大手に統一 -->
     <link rel="stylesheet" href="https://cloudflare.com" />
     <script src="https://cloudflare.com"></script>
     <style>
         body { font-family: sans-serif; margin: 0; padding: 15px; text-align: center; background: #f3f4f6; color: #333; }
         h2 { margin: 5px 0 10px 0; color: #111; font-size: 20px; }
-        #google-map { height: 280px; display: none; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); box-sizing: border-box; }
+        /* display: none を完全に排除し、読み込み時点で280pxの枠を強制表示 */
+        #google-map { height: 280px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); box-sizing: border-box; background: #e5e7eb; }
         .card { background: white; padding: 12px; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: left; }
         .card-title { font-weight: bold; margin-bottom: 5px; color: #4b5563; font-size: 13px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
         #alert-area { display: none; background: #fee2e2; border: 2px solid #ef4444; border-radius: 12px; padding: 15px; margin-bottom: 15px; text-align: left; animation: pulse 2s infinite; }
@@ -31,11 +32,9 @@
     <!-- 地図を表示するコンテナ -->
     <div id="google-map"></div>
 
-    <!-- 1. 【自動出現】過去のデータ接近アラート -->
     <div id="alert-area">
         <div class="alert-title">⚠️ 過去の記録場所に接近中！</div>
         <div id="past-data-display" style="font-size: 14px; margin-bottom: 10px; line-height: 1.4;"></div>
-        
         <div class="card-title" style="border-bottom: 1px solid #fca5a5; color: #991b1b;">📝 今回の情報を入力</div>
         <input type="text" id="comment" placeholder="今回のコメントを入力（任意）">
         <div class="btn-container">
@@ -44,7 +43,6 @@
         </div>
     </div>
 
-    <!-- 2. 周辺情報カード -->
     <div class="card">
         <div class="card-title">🔍 周辺のデータ状況</div>
         <div id="nearby-status">過去データを読み込んでいます...</div>
@@ -53,11 +51,10 @@
     <p id="status"></p>
 
     <script>
-        // ★【重要】ここに「新しいGASのURL」を貼り付けてください
-        const gasUrl = "https://script.google.com/macros/s/AKfycbyoYO-Y0C5vFkTfmAB5uRT2s-otVBLllbIUobILS2t_SXltKGiAZg5t_mQv1Zyugq_O/exec"; 
+        const gasUrl = "YOUR_WEB_APP_URL"; 
 
         let pastRecords = [];
-        const TARGET_DISTANCE = 50; 
+        const TARGET_DISTANCE = 50; // 50m範囲
 
         let map = null;
         let currentMarker = null;
@@ -82,7 +79,19 @@
             startTracking();
         }
 
+        // ページ読み込み完了と同時に、GPSを待たずに強制的に地図を初期化
         window.onload = () => {
+            try {
+                map = L.map('google-map').setView([35.6812, 139.7671], 14); // 初期位置：東京
+                // タイルURLをhttpsで固定。安全な地図配信サーバーに変更
+                L.tileLayer('https://wikimedia.org{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors'
+                }).addTo(map);
+                dataMarkersLayer = L.layerGroup().addTo(map);
+            } catch (e) {
+                console.error("地図初期化エラー:", e);
+            }
+
             if (gasUrl === "YOUR_WEB_APP_URL") {
                 document.getElementById("status").innerText = "GASのURLを設定してください！";
                 return;
@@ -100,67 +109,65 @@
         function startTracking() {
             if (!navigator.geolocation) return;
 
-            const mapFrame = document.getElementById('google-map');
-            mapFrame.style.display = "block";
-
-            if (!map) {
-                map = L.map('google-map').setView([35.6812, 139.7671], 14);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-                dataMarkersLayer = L.layerGroup().addTo(map);
-            }
-
             navigator.geolocation.watchPosition((pos) => {
                 const currentLat = pos.coords.latitude;
                 const currentLng = pos.coords.longitude;
                 
-                map.setView([currentLat, currentLng], 17);
+                // 現在地が捕捉されたら、そこを中心にする
+                if (map) {
+                    map.setView([currentLat, currentLng], 17);
 
-                if (currentMarker) map.removeLayer(currentMarker);
-                currentMarker = L.circleMarker([currentLat, currentLng], {
-                    radius: 9,
-                    color: '#ffffff',
-                    weight: 2,
-                    fillColor: '#1d4ed8',
-                    fillOpacity: 0.9
-                }).addTo(map);
-                
-                dataMarkersLayer.clearLayers();
-
-                let closeHouse = null;
-                let minDistance = Infinity;
-
-                if (pastRecords.length > 0) {
-                    pastRecords.forEach(record => {
-                        const dist = getDistance(currentLat, currentLng, record.lat, record.lng);
-                        
-                        if (dist <= TARGET_DISTANCE) {
-                            L.marker([record.lat, record.lng]).addTo(dataMarkersLayer)
-                             .bindPopup(`<b>結果:</b> ${record.status || "なし"}<br><b>メモ:</b> ${record.comment || "なし"}`);
-                        }
-
-                        if (dist < minDistance) {
-                            minDistance = dist;
-                            closeHouse = record;
-                        }
-                    });
-                }
-
-                const alertArea = document.getElementById("alert-area");
-                if (closeHouse && minDistance <= TARGET_DISTANCE) {
-                    let dateStr = "不明";
-                    try { if(closeHouse.dateTime) dateStr = new Date(closeHouse.dateTime).toLocaleString('ja-JP'); } catch(e) {}
+                    // 青い〇で現在地マークを作成
+                    if (currentMarker) map.removeLayer(currentMarker);
+                    currentMarker = L.circleMarker([currentLat, currentLng], {
+                        radius: 9,
+                        color: '#ffffff',
+                        weight: 2,
+                        fillColor: '#1d4ed8',
+                        fillOpacity: 0.9
+                    }).addTo(map);
                     
-                    document.getElementById("past-data-display").innerHTML = 
-                        "<b>距離:</b> 約" + Math.round(minDistance) + "m<br>" +
-                        "<b>前回の訪問日:</b> " + dateStr + "<br>" +
-                        "<b>前回の結果:</b> " + (closeHouse.status || "なし") + "<br>" +
-                        "<b>前回のメモ:</b> " + (closeHouse.comment || "なし");
-                    alertArea.style.display = "block";
-                    document.getElementById("nearby-status").innerText = "近く（50m以内）に過去の記録場所があります！";
-                } else {
-                    alertArea.style.display = "none";
-                    if (pastRecords.length > 0 && closeHouse) {
-                        document.getElementById("nearby-status").innerText = "一番近い過去の記録場所まで、あと約 " + Math.round(minDistance) + "m です。";
+                    if (dataMarkersLayer) {
+                        dataMarkersLayer.clearLayers();
+
+                        let closeHouse = null;
+                        let minDistance = Infinity;
+
+                        if (pastRecords.length > 0) {
+                            pastRecords.forEach(record => {
+                                const dist = getDistance(currentLat, currentLng, record.lat, record.lng);
+                                
+                                // 50m以内にピンを立てる
+                                if (dist <= TARGET_DISTANCE) {
+                                    L.marker([record.lat, record.lng]).addTo(dataMarkersLayer)
+                                     .bindPopup(`<b>結果:</b> ${record.status || "なし"}<br><b>メモ:</b> ${record.comment || "なし"}`);
+                                }
+
+                                if (dist < minDistance) {
+                                    minDistance = dist;
+                                    closeHouse = record;
+                                }
+                            });
+                        }
+
+                        const alertArea = document.getElementById("alert-area");
+                        if (closeHouse && minDistance <= TARGET_DISTANCE) {
+                            let dateStr = "不明";
+                            try { if(closeHouse.dateTime) dateStr = new Date(closeHouse.dateTime).toLocaleString('ja-JP'); } catch(e) {}
+                            
+                            document.getElementById("past-data-display").innerHTML = 
+                                "<b>距離:</b> 約" + Math.round(minDistance) + "m<br>" +
+                                "<b>前回の訪問日:</b> " + dateStr + "<br>" +
+                                "<b>前回の結果:</b> " + (closeHouse.status || "なし") + "<br>" +
+                                "<b>前回のメモ:</b> " + (closeHouse.comment || "なし");
+                            alertArea.style.display = "block";
+                            document.getElementById("nearby-status").innerText = "近く（50m以内）に過去の記録場所があります！";
+                        } else {
+                            alertArea.style.display = "none";
+                            if (pastRecords.length > 0 && closeHouse) {
+                                document.getElementById("nearby-status").innerText = "一番近い過去の記録場所まで、あと約 " + Math.round(minDistance) + "m です。";
+                            }
+                        }
                     }
                 }
             }, (error) => {
